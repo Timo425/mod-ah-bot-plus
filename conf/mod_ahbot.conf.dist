@@ -312,6 +312,17 @@ AuctionHouseBot.Buyer.AlwaysBidMaxCalculatedPrice = false
 AuctionHouseBot.Buyer.PreventOverpayingForVendorItems = true
 AuctionHouseBot.Buyer.BidAgainstPlayers = false
 
+#    AuctionHouseBot.Buyer.HourlyChance.Enabled (local addition)
+#        If true, every player auction with a buyout gets a roll each buy cycle instead of a
+#        yes/no price test: at or under the price the buyer would pay (as above) it sells
+#        with AtFairPrice chance per hour; above that the chance falls exponentially and is
+#        At150Percent at 1.5x that price (0.8 and 0.2: 5% at 2x, 0.3% at 3x).
+#        BuyCandidatesPerBuyCycle is ignored while this is on.
+#    Default: false, 0.8, 0.2
+AuctionHouseBot.Buyer.HourlyChance.Enabled = false
+AuctionHouseBot.Buyer.HourlyChance.AtFairPrice = 0.8
+AuctionHouseBot.Buyer.HourlyChance.At150Percent = 0.2
+
 ###############################################################################
 #    AuctionHouseBot.ListProportion.Category*.Quality*
 #        Determines how many of the listings, proportionally, show up as new auctions

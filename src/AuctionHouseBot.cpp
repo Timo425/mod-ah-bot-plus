@@ -63,6 +63,9 @@ AuctionHouseBot::AuctionHouseBot() :
     ListingExpireTimeInSecondsMin(900),
     ListingExpireTimeInSecondsMax(86400),
     BuyingBotAcceptablePriceModifier(1),
+    BuyingBotHourlyChanceEnabled(false),
+    BuyingBotHourlyChanceAtFairPrice(0.8f),
+    BuyingBotHourlyChanceAt150Percent(0.2f),
     BuyingBotAlwaysBidMaxCalculatedPrice(false),
     BuyingBotWillBidAgainstPlayers(false),
     AHCharactersGUIDsForQuery(""),
@@ -1679,6 +1682,9 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
     } while (result->NextRow());
 
     int randBuyingBotBuyCandidatesPerBuyCycle = urand(BuyingBotBuyCandidatesPerBuyCycleMin, BuyingBotBuyCandidatesPerBuyCycleMax);
+    // With hourly chances every player auction gets its own roll each cycle.
+    if (BuyingBotHourlyChanceEnabled)
+        randBuyingBotBuyCandidatesPerBuyCycle = possibleBids.size();
     for (int count = 1; count <= randBuyingBotBuyCandidatesPerBuyCycle; ++count)
     {
         // Do we have anything to bid? If not, stop here.
@@ -1753,6 +1759,24 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
                 else
                     calcBidAmount = auction->bid + auction->GetAuctionOutBid();
             }
+        }
+
+        // Local: a buyout auction sells with an hourly chance instead of a yes/no price test.
+        // At or under the price the buyer is willing to pay: AtFairPrice per hour; above it the
+        // chance falls exponentially, reaching At150Percent at 1.5x that price (0.8 and 0.2 give
+        // 5% at 2x, 0.3% at 3x). Converted to this cycle's share of an hour.
+        if (BuyingBotHourlyChanceEnabled && auction->buyout != 0 && willingToPayForStackPrice > 0)
+        {
+            double ratio = (double)auction->buyout / (double)willingToPayForStackPrice;
+            double fair = std::clamp((double)BuyingBotHourlyChanceAtFairPrice, 0.0, 0.999);
+            double at150 = std::clamp((double)BuyingBotHourlyChanceAt150Percent, 0.0, fair);
+            double hourly = ratio <= 1.0 ? fair : (at150 <= 0.0 ? 0.0 : fair * std::pow(at150 / fair, (ratio - 1.0) / 0.5));
+            double cycleMinutes = std::max<uint32>(1, CyclesBetweenBuyAction);
+            double perCycle = 1.0 - std::pow(1.0 - hourly, cycleMinutes / 60.0);
+            doBuyout = rand_norm() < perCycle;
+            doBid = false;
+            if (debug_Out)
+                LOG_INFO("module", "AHBuyer: Hourly chance: ratio {:.2f}, hourly {:.3f}, this cycle {:.4f}, buy {}", ratio, hourly, perCycle, doBuyout);
         }
 
         // Check that the item isn't listed above Vendor sell price. Out-of-range entries (items added after the
@@ -2013,6 +2037,9 @@ void AuctionHouseBot::InitializeConfiguration()
     // Buyer Bot
     SetBuyingBotBuyCandidatesPerBuyCycle();
     BuyingBotAcceptablePriceModifier = sConfigMgr->GetOption<float>("AuctionHouseBot.Buyer.AcceptablePriceModifier", 1);
+    BuyingBotHourlyChanceEnabled = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.HourlyChance.Enabled", false);
+    BuyingBotHourlyChanceAtFairPrice = sConfigMgr->GetOption<float>("AuctionHouseBot.Buyer.HourlyChance.AtFairPrice", 0.8f);
+    BuyingBotHourlyChanceAt150Percent = sConfigMgr->GetOption<float>("AuctionHouseBot.Buyer.HourlyChance.At150Percent", 0.2f);
     BuyingBotAlwaysBidMaxCalculatedPrice = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.AlwaysBidMaxCalculatedPrice", false);
     PreventOverpayingForVendorItems = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.PreventOverpayingForVendorItems", true);
     if (PreventOverpayingForVendorItems)

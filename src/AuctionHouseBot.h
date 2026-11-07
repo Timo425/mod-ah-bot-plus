@@ -151,6 +151,10 @@ private:
     uint32 ListingExpireTimeInSecondsMin;
     uint32 ListingExpireTimeInSecondsMax;
     float BuyingBotAcceptablePriceModifier;
+    // Local: overpriced player auctions still sell, with an hourly chance that falls with the price.
+    bool BuyingBotHourlyChanceEnabled;
+    float BuyingBotHourlyChanceAtFairPrice;
+    float BuyingBotHourlyChanceAt150Percent;
     bool BuyingBotAlwaysBidMaxCalculatedPrice;
     bool BuyingBotWillBidAgainstPlayers;
     std::vector<uint32> vendorItemsPrices;
