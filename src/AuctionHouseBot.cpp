@@ -1659,6 +1659,19 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
         return;
     }
 
+    if (!CatchUpLoaded)
+    {
+        CatchUpLoaded = true;
+        if (QueryResult offline = CharacterDatabase.Query("SELECT stopped_at, offline_seconds FROM ahbot_offline LIMIT 1"))
+        {
+            CatchUpStoppedAt = offline->Fetch()[0].Get<uint32>();
+            CatchUpOffSeconds = offline->Fetch()[1].Get<uint32>();
+            CharacterDatabase.Execute("DELETE FROM ahbot_offline");
+            LOG_INFO("module", "AHBuyer: catching up on {} h offline", CatchUpOffSeconds / 3600);
+        }
+    }
+    bool catchUp = BuyingBotHourlyChanceEnabled && CatchUpOffSeconds > 0 && CatchUpHousesDone.insert(config->GetAHFID()).second;
+
     // Pull currentAuctionItemListCount.
     string queryString = "SELECT id FROM auctionhouse WHERE itemowner NOT IN ({}) AND buyguid NOT IN ({})";
     if (BuyingBotWillBidAgainstPlayers == false)
@@ -1773,7 +1786,21 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
             double hourly = ratio <= 1.0 ? fair : (at150 <= 0.0 ? 0.0 : fair * std::pow(at150 / fair, (ratio - 1.0) / 0.5));
             double cycleMinutes = std::max<uint32>(1, CyclesBetweenBuyAction);
             double perCycle = 1.0 - std::pow(1.0 - hourly, cycleMinutes / 60.0);
-            doBuyout = rand_norm() < perCycle;
+            if (catchUp)
+            {
+                // One roll for the hours it would have been listed while the server was off.
+                time_t realExpire = auction->expire_time - CatchUpOffSeconds;
+                double listedSeconds = std::clamp((double)(realExpire - (time_t)CatchUpStoppedAt), 0.0, (double)CatchUpOffSeconds);
+                perCycle = 1.0 - std::pow(1.0 - hourly, listedSeconds / 3600.0);
+                if (rand_norm() >= perCycle)
+                {
+                    // Unsold: back to its real expiry; one that ran out comes back by mail next tick.
+                    auction->expire_time = std::max<time_t>(realExpire, time(nullptr));
+                    CharacterDatabase.Execute("UPDATE auctionhouse SET time = {} WHERE id = {}", (uint32)auction->expire_time, auction->Id);
+                    continue;
+                }
+            }
+            doBuyout = catchUp || rand_norm() < perCycle;
             doBid = false;
             if (debug_Out)
                 LOG_INFO("module", "AHBuyer: Hourly chance: ratio {:.2f}, hourly {:.3f}, this cycle {:.4f}, buy {}", ratio, hourly, perCycle, doBuyout);

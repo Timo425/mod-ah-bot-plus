@@ -25,6 +25,7 @@
 #include "ObjectGuid.h"
 
 #include <map>
+#include <set>
 #include <vector>
 
 struct AuctionEntry;
@@ -155,6 +156,13 @@ private:
     bool BuyingBotHourlyChanceEnabled;
     float BuyingBotHourlyChanceAtFairPrice;
     float BuyingBotHourlyChanceAt150Percent;
+    // Local: sales while the server was off. The wow-bots launcher writes the stop time and the
+    // downtime to the ahbot_offline table and pushes every auction's expiry forward by the
+    // downtime, so nothing expires before the first buy cycle settles it.
+    bool CatchUpLoaded = false;
+    uint32 CatchUpStoppedAt = 0;
+    uint32 CatchUpOffSeconds = 0;
+    std::set<uint32> CatchUpHousesDone;
     bool BuyingBotAlwaysBidMaxCalculatedPrice;
     bool BuyingBotWillBidAgainstPlayers;
     std::vector<uint32> vendorItemsPrices;
