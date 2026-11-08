@@ -22,6 +22,7 @@
 #define AUCTION_HOUSE_BOT_H
 
 #include "Common.h"
+#include "DatabaseEnvFwd.h"
 #include "ObjectGuid.h"
 
 #include <map>
@@ -29,6 +30,8 @@
 #include <vector>
 
 struct AuctionEntry;
+struct AuctionHouseEntry;
+class AuctionHouseObject;
 class Player;
 class WorldSession;
 
@@ -230,6 +233,7 @@ private:
     std::vector<ListProportionNode> ItemListProportionNodesSeed;
     std::vector<ListProportionNode> ItemListProportionNodesLookup;
     std::unordered_map<uint32, uint64> ItemListProportionMultipliedItemIDs;
+    std::unordered_map<uint32, uint64> StockedItemIDs;
     std::map<uint32, std::map<uint32, std::vector<uint32>>> ItemCandidatesByItemClassAndQuality;
     float PriceMultiplierCategoryConsumable;
     float PriceMultiplierCategoryContainer;
@@ -389,6 +393,11 @@ public:
     void PopulateItemCandidatesAndProportions();
     uint32 GetRandomItemIDForListing();
     void AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpecificAuctionHouseConfig* config);
+    bool CreateBotAuction(uint32 itemID, ItemTemplate const* prototype, std::vector<Player*> const& AHBPlayers,
+        FactionSpecificAuctionHouseConfig* config, AuctionHouseEntry const* ahEntry, AuctionHouseObject* auctionHouse,
+        CharacterDatabaseTransaction trans);
+    void TopUpStockedItems(std::vector<Player*> const& AHBPlayers, FactionSpecificAuctionHouseConfig* config,
+        AuctionHouseEntry const* ahEntry, AuctionHouseObject* auctionHouse);
     void AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, FactionSpecificAuctionHouseConfig* config);
     void PopulateVendorItemsPrices();
     void CleanupExpiredAuctionItems();

@@ -1045,6 +1045,9 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
         return;
     }
 
+    // Staples first, even in a full house: random rolls alone can leave a house without them for days.
+    TopUpStockedItems(AHBPlayers, config, ahEntry, auctionHouse);
+
     uint32 currentAuctionItemListCount = auctionHouse->Getcount();
     if (currentAuctionItemListCount >= minItems)
     {
@@ -1149,53 +1152,8 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
                 }
             }
 
-            Player* AHBplayer = AHBPlayers[urand(0, AHBPlayers.size() - 1)];
-
-            Item* item = Item::CreateItem(itemID, 1, AHBplayer);
-            if (item == NULL)
-            {
-                if (debug_Out)
-                    LOG_ERROR("module", "AHSeller: Item::CreateItem() returned NULL");
+            if (!CreateBotAuction(itemID, prototype, AHBPlayers, config, ahEntry, auctionHouse, trans))
                 break;
-            }
-            item->AddToUpdateQueueOf(AHBplayer);
-
-            uint32 randomPropertyId = Item::GenerateItemRandomPropertyId(itemID);
-            if (randomPropertyId != 0)
-                item->SetItemRandomProperties(randomPropertyId);
-
-            // Determine price
-            uint64 buyoutPrice = 0;
-            uint64 bidPrice = 0;
-            CalculateItemValue(prototype, bidPrice, buyoutPrice);
-
-            // Define a duration
-            uint32 etime = urand(ListingExpireTimeInSecondsMin, ListingExpireTimeInSecondsMax);
-
-            // Set stack size
-            uint32 stackCount = GetStackSizeForItem(prototype);
-            item->SetCount(stackCount);
-
-            uint32 dep =  sAuctionMgr->GetAuctionDeposit(ahEntry, etime, item, stackCount);
-
-            AuctionEntry* auctionEntry = new AuctionEntry();
-            auctionEntry->Id = sObjectMgr->GenerateAuctionID();
-            auctionEntry->houseId = AuctionHouseId(config->GetAHID());
-            auctionEntry->item_guid = item->GetGUID();
-            auctionEntry->item_template = item->GetEntry();
-            auctionEntry->itemCount = item->GetCount();
-            auctionEntry->owner = AHBplayer->GetGUID();
-            auctionEntry->startbid = bidPrice * stackCount;
-            auctionEntry->buyout = buyoutPrice * stackCount;
-            auctionEntry->bid = 0;
-            auctionEntry->deposit = dep;
-            auctionEntry->expire_time = (time_t) etime + time(NULL);
-            auctionEntry->auctionHouseEntry = ahEntry;
-            item->SaveToDB(trans);
-            item->RemoveFromUpdateQueueOf(AHBplayer);
-            sAuctionMgr->AddAItem(item);
-            auctionHouse->AddAuction(auctionEntry);
-            auctionEntry->SaveToDB(trans);
             itemsGenerated++;
             batchCount++;
         }
@@ -1204,6 +1162,93 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
     }
     if (debug_Out)
         LOG_INFO("module", "AHSeller: Added {} items", itemsGenerated);
+}
+
+bool AuctionHouseBot::CreateBotAuction(uint32 itemID, ItemTemplate const* prototype, std::vector<Player*> const& AHBPlayers,
+    FactionSpecificAuctionHouseConfig* config, AuctionHouseEntry const* ahEntry, AuctionHouseObject* auctionHouse,
+    CharacterDatabaseTransaction trans)
+{
+    Player* AHBplayer = AHBPlayers[urand(0, AHBPlayers.size() - 1)];
+
+    Item* item = Item::CreateItem(itemID, 1, AHBplayer);
+    if (item == NULL)
+    {
+        if (debug_Out)
+            LOG_ERROR("module", "AHSeller: Item::CreateItem() returned NULL");
+        return false;
+    }
+    item->AddToUpdateQueueOf(AHBplayer);
+
+    uint32 randomPropertyId = Item::GenerateItemRandomPropertyId(itemID);
+    if (randomPropertyId != 0)
+        item->SetItemRandomProperties(randomPropertyId);
+
+    // Determine price
+    uint64 buyoutPrice = 0;
+    uint64 bidPrice = 0;
+    CalculateItemValue(prototype, bidPrice, buyoutPrice);
+
+    // Define a duration
+    uint32 etime = urand(ListingExpireTimeInSecondsMin, ListingExpireTimeInSecondsMax);
+
+    // Set stack size
+    uint32 stackCount = GetStackSizeForItem(prototype);
+    item->SetCount(stackCount);
+
+    uint32 dep =  sAuctionMgr->GetAuctionDeposit(ahEntry, etime, item, stackCount);
+
+    AuctionEntry* auctionEntry = new AuctionEntry();
+    auctionEntry->Id = sObjectMgr->GenerateAuctionID();
+    auctionEntry->houseId = AuctionHouseId(config->GetAHID());
+    auctionEntry->item_guid = item->GetGUID();
+    auctionEntry->item_template = item->GetEntry();
+    auctionEntry->itemCount = item->GetCount();
+    auctionEntry->owner = AHBplayer->GetGUID();
+    auctionEntry->startbid = bidPrice * stackCount;
+    auctionEntry->buyout = buyoutPrice * stackCount;
+    auctionEntry->bid = 0;
+    auctionEntry->deposit = dep;
+    auctionEntry->expire_time = (time_t) etime + time(NULL);
+    auctionEntry->auctionHouseEntry = ahEntry;
+    item->SaveToDB(trans);
+    item->RemoveFromUpdateQueueOf(AHBplayer);
+    sAuctionMgr->AddAItem(item);
+    auctionHouse->AddAuction(auctionEntry);
+    auctionEntry->SaveToDB(trans);
+    return true;
+}
+
+// AuctionHouseBot.StockedItemIDs: each item keeps at least its count of auctions in every house.
+void AuctionHouseBot::TopUpStockedItems(std::vector<Player*> const& AHBPlayers, FactionSpecificAuctionHouseConfig* config,
+    AuctionHouseEntry const* ahEntry, AuctionHouseObject* auctionHouse)
+{
+    if (StockedItemIDs.empty() || AHBPlayers.empty())
+        return;
+
+    std::unordered_map<uint32, uint64> listed;
+    for (auto const& [auctionID, entry] : auctionHouse->GetAuctions())
+        if (entry && StockedItemIDs.count(entry->item_template))
+            ++listed[entry->item_template];
+
+    auto trans = CharacterDatabase.BeginTransaction();
+    uint32 added = 0;
+    for (auto const& [itemID, wanted] : StockedItemIDs)
+    {
+        ItemTemplate const* prototype = sObjectMgr->GetItemTemplate(itemID);
+        if (!prototype)
+            continue;
+
+        for (uint64 have = listed[itemID]; have < wanted; ++have)
+        {
+            if (!CreateBotAuction(itemID, prototype, AHBPlayers, config, ahEntry, auctionHouse, trans))
+                break;
+            ++added;
+        }
+    }
+    CharacterDatabase.CommitTransaction(trans);
+
+    if (debug_Out && added)
+        LOG_INFO("module", "AHSeller: Topped up {} stocked-item auctions in house {}", added, config->GetAHID());
 }
 
 bool AuctionHouseBot::HandleAdvancedListingRuleUseDropRates(ItemTemplate const*& proto)
@@ -2143,6 +2188,8 @@ void AuctionHouseBot::InitializeConfiguration()
     }
     ItemListProportionMultipliedItemIDs.clear();
     AddItemValuePairsToItemIDMap(ItemListProportionMultipliedItemIDs, sConfigMgr->GetOption<std::string>("AuctionHouseBot.ListProportion.ListMultipliedItemIDs", ""));
+    StockedItemIDs.clear();
+    AddItemValuePairsToItemIDMap(StockedItemIDs, sConfigMgr->GetOption<std::string>("AuctionHouseBot.StockedItemIDs", ""));
 
     // Price Multipliers
     PriceMultiplierCategoryConsumable = sConfigMgr->GetOption<float>("AuctionHouseBot.PriceMultiplier.Category.Consumable", 1);
