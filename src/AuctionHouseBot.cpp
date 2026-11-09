@@ -33,6 +33,7 @@
 
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace std;
 
@@ -1715,7 +1716,13 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
             LOG_INFO("module", "AHBuyer: catching up on {} h offline", CatchUpOffSeconds / 3600);
         }
     }
-    bool catchUp = BuyingBotHourlyChanceEnabled && CatchUpOffSeconds > 0 && CatchUpHousesDone.insert(config->GetAHFID()).second;
+    bool catchUp = (BuyingBotHourlyChanceEnabled || BuyingBotDemandEnabled) && CatchUpOffSeconds > 0 && CatchUpHousesDone.insert(config->GetAHFID()).second;
+
+    if (BuyingBotDemandEnabled)
+    {
+        BuyWithDemand(AHBPlayers, config, catchUp);
+        return;
+    }
 
     // Pull currentAuctionItemListCount.
     string queryString = "SELECT id FROM auctionhouse WHERE itemowner NOT IN ({}) AND buyguid NOT IN ({})";
@@ -1926,24 +1933,210 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
             CharacterDatabase.CommitTransaction(trans);
         }
         else if (doBuyout)
+            BuyoutAuctionAsBot(auction, AHBplayer, auctionHouse);
+    }
+}
+
+void AuctionHouseBot::BuyoutAuctionAsBot(AuctionEntry* auction, Player* AHBplayer, AuctionHouseObject* auctionHouse)
+{
+    auto trans = CharacterDatabase.BeginTransaction();
+
+    if ((auction->bidder) && (AHBplayer->GetGUID() != auction->bidder))
+        sAuctionMgr->SendAuctionOutbiddedMail(auction, auction->buyout, AHBplayer, trans);
+    auction->bidder = AHBplayer->GetGUID();
+    auction->bid = auction->buyout;
+
+    // Send mails to buyer & seller
+    sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
+    sAuctionMgr->SendAuctionWonMail(auction, trans);
+    auction->DeleteFromDB(trans);
+
+    sAuctionMgr->RemoveAItem(auction->item_guid);
+    auctionHouse->RemoveAuction(auction);
+    CharacterDatabase.CommitTransaction(trans);
+}
+
+// Local: a buyer took one of the seller bot's own listings. The item just goes (deleted from the
+// DB and memory, as the core does for an item whose buyer is gone); the seller relists over time.
+void AuctionHouseBot::RemoveBoughtBotAuction(AuctionEntry* auction, AuctionHouseObject* auctionHouse)
+{
+    auto trans = CharacterDatabase.BeginTransaction();
+    auction->DeleteFromDB(trans);
+    sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);
+    auctionHouse->RemoveAuction(auction);
+    CharacterDatabase.CommitTransaction(trans);
+}
+
+namespace
+{
+    struct DemandListing
+    {
+        AuctionEntry* auction;
+        double unitPrice;
+        time_t realExpire;
+        bool byBot;
+        bool gone;
+    };
+
+    uint32 DrawPoisson(double mean)
+    {
+        if (mean <= 0.0)
+            return 0;
+        if (mean > 50.0)
         {
-            auto trans = CharacterDatabase.BeginTransaction();
+            // Normal approximation (Box-Muller) for long catch-ups.
+            double u1 = 1.0 - rand_norm();
+            double u2 = rand_norm();
+            double z = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * 3.14159265358979323846 * u2);
+            return (uint32)std::max(0.0, std::round(mean + std::sqrt(mean) * z));
+        }
+        double limit = std::exp(-mean);
+        double p = 1.0;
+        uint32 k = 0;
+        do
+        {
+            ++k;
+            p *= rand_norm();
+        } while (p > limit);
+        return k - 1;
+    }
+}
 
-            if ((auction->bidder) && (AHBplayer->GetGUID() != auction->bidder))
-                sAuctionMgr->SendAuctionOutbiddedMail(auction, auction->buyout, AHBplayer, trans);
-            auction->bidder = AHBplayer->GetGUID();
-            auction->bid = auction->buyout;
+// Local: buyers per item (AuctionHouseBot.Buyer.Demand.*). Each item gets BuyersPerDay buyers a day
+// in each house, by item class, arriving at random. A buyer's top price is the buyer's usual price
+// (CalculateItemValue x AcceptablePriceModifier, re-rolled per buyer) times a markup that only some
+// accept: ShareAt150Percent of buyers still pay 1.5x, and the share falls exponentially (0.25: 6%
+// at 2x). The buyer takes the cheapest listing of the item, a player's or the seller bot's, if it
+// is at or under that price, and otherwise leaves. A bought seller-bot listing is removed, so the
+// bot's cheap stock goes first and undercutting it matters, and flooding one item sells slowly.
+// Only items with a player listing are simulated: one pass over the house per buy cycle.
+// While catching up on the time the server was off, the buyers of those hours arrive in time order
+// and only see listings that were still up then; unsold player auctions go back to their real expiry.
+void AuctionHouseBot::BuyWithDemand(std::vector<Player*> const& AHBPlayers, FactionSpecificAuctionHouseConfig* config, bool catchUp)
+{
+    AuctionHouseObject* auctionHouse = sAuctionMgr->GetAuctionsMap(config->GetAHFID());
+    if (!auctionHouse)
+        return;
 
-            // Send mails to buyer & seller
-            sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
-            sAuctionMgr->SendAuctionWonMail(auction, trans);
-            auction->DeleteFromDB(trans);
+    time_t now = time(nullptr);
+    double hours;
+    if (catchUp)
+        hours = CatchUpOffSeconds / 3600.0;
+    else
+    {
+        // Real time since this house's last buy cycle (the AH manager ticks about once a minute;
+        // a paused server catches up to an hour).
+        auto last = DemandLastBuyTime.find(config->GetAHFID());
+        hours = last == DemandLastBuyTime.end() ? 1.0 / 60.0 : std::clamp((now - last->second) / 3600.0, 0.0, 1.0);
+    }
+    DemandLastBuyTime[config->GetAHFID()] = now;
+    time_t shift = catchUp ? (time_t)CatchUpOffSeconds : 0;
 
-            sAuctionMgr->RemoveAItem(auction->item_guid);
-            auctionHouse->RemoveAuction(auction);
-            CharacterDatabase.CommitTransaction(trans);
+    std::unordered_set<uint32> botGuids;
+    for (auto const& character : AHCharacters)
+        botGuids.insert(character.CharacterGUID);
+
+    // Pass 1: items with a player listing (buyout, no bid yet).
+    std::unordered_map<uint32, std::vector<DemandListing>> listingsByItem;
+    for (auto const& [id, auction] : auctionHouse->GetAuctions())
+        if (auction->buyout != 0 && auction->bid == 0 && auction->itemCount > 0 && !botGuids.count(auction->owner.GetCounter()))
+            listingsByItem[auction->item_template];
+    // No AH bot character to buy with: nobody buys, but a catch-up still restores the expiries below.
+    if (AHBPlayers.empty())
+        listingsByItem.clear();
+
+    // Pass 2: every buyout listing of those items, players' and the seller bot's.
+    for (auto const& [id, auction] : auctionHouse->GetAuctions())
+    {
+        if (auction->buyout == 0 || auction->bid != 0 || auction->itemCount == 0)
+            continue;
+        auto it = listingsByItem.find(auction->item_template);
+        if (it == listingsByItem.end())
+            continue;
+        it->second.push_back({ auction, (double)auction->buyout / auction->itemCount, auction->expire_time - shift,
+            botGuids.count(auction->owner.GetCounter()) > 0, false });
+    }
+
+    double share150 = std::clamp((double)BuyingBotDemandShareAt150Percent, 0.0, 0.999);
+    uint32 soldPlayer = 0, soldBot = 0, buyersTotal = 0;
+    for (auto& [itemID, listings] : listingsByItem)
+    {
+        ItemTemplate const* prototype = sObjectMgr->GetItemTemplate(itemID);
+        if (!prototype)
+            continue;
+        double perDay = prototype->Class < BuyingBotDemandBuyersPerDay.size() ? BuyingBotDemandBuyersPerDay[prototype->Class] : 0.0;
+        uint32 buyers = DrawPoisson(perDay * hours / 24.0);
+        if (buyers == 0)
+            continue;
+        buyersTotal += buyers;
+
+        // Cheapest first; on equal prices the player's listing goes first.
+        std::sort(listings.begin(), listings.end(), [](DemandListing const& a, DemandListing const& b)
+        {
+            return a.unitPrice != b.unitPrice ? a.unitPrice < b.unitPrice : (!a.byBot && b.byBot);
+        });
+
+        std::vector<time_t> arrivals(buyers, now);
+        if (catchUp)
+        {
+            for (auto& t : arrivals)
+                t = (time_t)CatchUpStoppedAt + (time_t)(rand_norm() * CatchUpOffSeconds);
+            std::sort(arrivals.begin(), arrivals.end());
+        }
+
+        uint32 vendorSellPrice = itemID < vendorItemsPrices.size() ? vendorItemsPrices[itemID] : UINT32_MAX;
+        for (time_t arrival : arrivals)
+        {
+            uint64 discardBidPrice = 0;
+            uint64 usualPrice = 0;
+            CalculateItemValue(prototype, discardBidPrice, usualPrice);
+            double markup = share150 > 0.0 ? 1.0 + 0.5 * std::log(1.0 - rand_norm()) / std::log(share150) : 1.0;
+            double topUnitPrice = (double)usualPrice * BuyingBotAcceptablePriceModifier * markup;
+
+            for (auto& listing : listings)
+            {
+                if (listing.gone || listing.realExpire <= arrival)
+                    continue;
+                // The cheapest listing still up decides: over the buyer's price, or over what a
+                // vendor charges for it, and the buyer leaves.
+                if (listing.unitPrice > topUnitPrice)
+                    break;
+                if (PreventOverpayingForVendorItems && vendorSellPrice > 0 && listing.auction->buyout > vendorSellPrice)
+                    break;
+                listing.gone = true;
+                if (listing.byBot)
+                {
+                    RemoveBoughtBotAuction(listing.auction, auctionHouse);
+                    ++soldBot;
+                }
+                else
+                {
+                    LOG_INFO("module", "AHBuyer: bought auction {} (item {} x{}) for {} copper", listing.auction->Id, itemID, listing.auction->itemCount, listing.auction->buyout);
+                    BuyoutAuctionAsBot(listing.auction, AHBPlayers[urand(0, AHBPlayers.size() - 1)], auctionHouse);
+                    ++soldPlayer;
+                }
+                break;
+            }
         }
     }
+
+    if (catchUp)
+    {
+        // Unsold player auctions back to their real expiry; one that ran out comes back by mail next tick.
+        auto trans = CharacterDatabase.BeginTransaction();
+        for (auto const& [id, auction] : auctionHouse->GetAuctions())
+        {
+            if (botGuids.count(auction->owner.GetCounter()))
+                continue;
+            auction->expire_time = std::max<time_t>(auction->expire_time - shift, now);
+            trans->Append("UPDATE auctionhouse SET time = {} WHERE id = {}", (uint32)auction->expire_time, auction->Id);
+        }
+        CharacterDatabase.CommitTransaction(trans);
+    }
+
+    if (catchUp || debug_Out)
+        LOG_INFO("module", "AHBuyer: house {}: {} buyers over {:.1f} h, bought {} player and {} seller-bot auctions",
+            config->GetAHFID(), buyersTotal, hours, soldPlayer, soldBot);
 }
 
 void AuctionHouseBot::Update()
@@ -2112,6 +2305,19 @@ void AuctionHouseBot::InitializeConfiguration()
     BuyingBotHourlyChanceEnabled = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.HourlyChance.Enabled", false);
     BuyingBotHourlyChanceAtFairPrice = sConfigMgr->GetOption<float>("AuctionHouseBot.Buyer.HourlyChance.AtFairPrice", 0.8f);
     BuyingBotHourlyChanceAt150Percent = sConfigMgr->GetOption<float>("AuctionHouseBot.Buyer.HourlyChance.At150Percent", 0.2f);
+    BuyingBotDemandEnabled = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.Demand.Enabled", false);
+    BuyingBotDemandShareAt150Percent = sConfigMgr->GetOption<float>("AuctionHouseBot.Buyer.Demand.ShareAt150Percent", 0.25f);
+    {
+        // By item class (ItemClass order); Money and Permanent never reach the auction house.
+        static char const* const demandClassNames[MAX_ITEM_CLASS] = { "Consumable", "Container", "Weapon", "Gem", "Armor",
+            "Reagent", "Projectile", "TradeGood", "Generic", "Recipe", "Money", "Quiver", "Quest", "Key", "Permanent", "Misc", "Glyph" };
+        static float const demandDefaults[MAX_ITEM_CLASS] = { 6, 3, 1.5f, 3, 1.5f, 4, 4, 8, 1, 1, 0, 1, 0.5f, 0.5f, 0, 1, 1 };
+        BuyingBotDemandBuyersPerDay.assign(MAX_ITEM_CLASS, 0.0f);
+        for (uint32 i = 0; i < MAX_ITEM_CLASS; ++i)
+            if (demandDefaults[i] > 0)
+                BuyingBotDemandBuyersPerDay[i] = std::max(0.0f, sConfigMgr->GetOption<float>(
+                    std::string("AuctionHouseBot.Buyer.Demand.BuyersPerDay.Category") + demandClassNames[i], demandDefaults[i]));
+    }
     BuyingBotAlwaysBidMaxCalculatedPrice = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.AlwaysBidMaxCalculatedPrice", false);
     PreventOverpayingForVendorItems = sConfigMgr->GetOption<bool>("AuctionHouseBot.Buyer.PreventOverpayingForVendorItems", true);
     if (PreventOverpayingForVendorItems)

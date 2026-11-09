@@ -166,6 +166,11 @@ private:
     uint32 CatchUpStoppedAt = 0;
     uint32 CatchUpOffSeconds = 0;
     std::set<uint32> CatchUpHousesDone;
+    // Local: buyers per item instead of a roll per auction (AuctionHouseBot.Buyer.Demand.*).
+    bool BuyingBotDemandEnabled = false;
+    float BuyingBotDemandShareAt150Percent = 0.25f;
+    std::vector<float> BuyingBotDemandBuyersPerDay;   // by item class
+    std::map<uint32, time_t> DemandLastBuyTime;       // by auction house faction id
     bool BuyingBotAlwaysBidMaxCalculatedPrice;
     bool BuyingBotWillBidAgainstPlayers;
     std::vector<uint32> vendorItemsPrices;
@@ -399,6 +404,9 @@ public:
     void TopUpStockedItems(std::vector<Player*> const& AHBPlayers, FactionSpecificAuctionHouseConfig* config,
         AuctionHouseEntry const* ahEntry, AuctionHouseObject* auctionHouse);
     void AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, FactionSpecificAuctionHouseConfig* config);
+    void BuyWithDemand(std::vector<Player*> const& AHBPlayers, FactionSpecificAuctionHouseConfig* config, bool catchUp);
+    void BuyoutAuctionAsBot(AuctionEntry* auction, Player* AHBplayer, AuctionHouseObject* auctionHouse);
+    void RemoveBoughtBotAuction(AuctionEntry* auction, AuctionHouseObject* auctionHouse);
     void PopulateVendorItemsPrices();
     void CleanupExpiredAuctionItems();
 

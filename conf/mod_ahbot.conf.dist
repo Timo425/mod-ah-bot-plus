@@ -323,6 +323,38 @@ AuctionHouseBot.Buyer.HourlyChance.Enabled = false
 AuctionHouseBot.Buyer.HourlyChance.AtFairPrice = 0.8
 AuctionHouseBot.Buyer.HourlyChance.At150Percent = 0.2
 
+#    AuctionHouseBot.Buyer.Demand.Enabled (local addition)
+#        If true, each item gets a number of buyers per day in each auction house instead of a
+#        roll per auction (replaces HourlyChance). A buyer's top price is the buyer's usual price
+#        (as above, AcceptablePriceModifier included) times a markup: ShareAt150Percent of
+#        buyers still pay 1.5x, and the share falls exponentially (0.25: 6% pay 2x). Each buyer
+#        takes the cheapest listing of the item, a player's or the seller bot's, if it is under
+#        that price; a bought seller-bot listing is removed. So the bot's cheap stock sells
+#        first, undercutting it matters, and twenty of one item sell slowly. Also settles the
+#        time the server was off (ahbot_offline). Only items with a player listing are simulated.
+#    AuctionHouseBot.Buyer.Demand.BuyersPerDay.Category*
+#        Buyers per day for each item of that class, per auction house (fractions allowed).
+#    Default: false, 0.25; per day Consumable 6, Container 3, Weapon 1.5, Gem 3, Armor 1.5,
+#        Reagent 4, Projectile 4, TradeGood 8, Generic 1, Recipe 1, Quiver 1, Quest 0.5,
+#        Key 0.5, Misc 1, Glyph 1
+AuctionHouseBot.Buyer.Demand.Enabled = false
+AuctionHouseBot.Buyer.Demand.ShareAt150Percent = 0.25
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryConsumable = 6
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryContainer = 3
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryWeapon = 1.5
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryGem = 3
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryArmor = 1.5
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryReagent = 4
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryProjectile = 4
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryTradeGood = 8
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryGeneric = 1
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryRecipe = 1
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryQuiver = 1
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryQuest = 0.5
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryKey = 0.5
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryMisc = 1
+AuctionHouseBot.Buyer.Demand.BuyersPerDay.CategoryGlyph = 1
+
 ###############################################################################
 #    AuctionHouseBot.ListProportion.Category*.Quality*
 #        Determines how many of the listings, proportionally, show up as new auctions
